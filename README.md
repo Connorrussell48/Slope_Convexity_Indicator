@@ -1,0 +1,1 @@
+# Slope_Convexity_Magnitude_Indicator
