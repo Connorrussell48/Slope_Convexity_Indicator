@@ -22,7 +22,7 @@ def calculate_adaptive_indicators(df, ma_period=200, lookback=30):
         area = integrate.trapz(secant - ma_window, t_window)
         normalized_area = (area / price[i]) * lookback
         
-        slopes[i] = 100 * np.tanh((slope / ma200[i]) * 100 * lookback / 5)
+        slopes[i] = 100 * np.tanh((slope / close[i]) * 100 * lookback)
         convexity[i] = 100 * np.tanh(normalized_area)
     
     results_df = pd.DataFrame({
