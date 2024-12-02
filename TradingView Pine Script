@@ -1,0 +1,111 @@
+//@version=5
+indicator("Adaptive Trend Indicators", overlay=false)
+
+// Adjust slope based on timeframe
+adjust_parameter() =>
+    // Trading hours per day: 6.5 hours
+    daily_hours = 6.5
+    
+    current_tf_hours = switch(timeframe.period)
+        "1" => 1.0/60     // 1-minute
+        "3" => 3.0/60     // 3-minute
+        "5" => 5.0/60     // 5-minute
+        "15" => 15.0/60   // 15-minute
+        "30" => 30.0/60   // 30-minute
+        "45" => 45.0/60   // 45-minute
+        "60" => 1.0       // 1-hour
+        "240" => 4.0      // 4-hour
+        "D" => daily_hours  // Daily
+        "W" => daily_hours * 5  // Weekly 
+        "M" => daily_hours * 22 // Monthly 
+        => 1.0            // Default case
+
+    // Scaling factor with min of 1
+    scaling_factor = math. max(current_tf_hours/daily_hours * 5,1)
+
+    scaling_factor
+
+// Parameters
+ma_length = 200
+lookback = 30
+
+//  tanh function 
+tanh(x) =>
+    (math.exp(2 * x) - 1) / (math.exp(2 * x) + 1)
+
+// MA calculation
+ma200 = ta.sma(close, ma_length)
+
+// Slope 
+slope_func() =>
+    price = ma200  // Using MA200 like in Python version
+    
+    // Calculate slope 
+    start_ma = ma200[lookback]
+    end_ma = ma200
+    slope = (end_ma - start_ma) / lookback
+    
+    // Percentage slope
+    percentage_slope = slope / price * 100 * lookback
+    
+    // Scaling
+    scaling = adjust_parameter()
+    scaled_percentage_slope = percentage_slope / scaling
+    
+    slope_indicator = 100 * tanh(scaled_percentage_slope)
+    
+    slope_indicator
+
+// Convexity 
+convexity_func() =>
+    price = ma200  // Using MA200 like in Python version
+    
+
+    start_ma = ma200[lookback]
+    end_ma = ma200
+    slope = (end_ma - start_ma) / lookback
+    
+    // Calculate area 
+    total_area = 0.0
+    for i = 0 to lookback-1
+        // Calculate secant points
+        secant1 = start_ma + slope * (lookback - i)
+        secant2 = start_ma + slope * (lookback - (i + 1))
+        
+
+        ma_val = ma200[lookback - i]
+        
+        // Trapezoid Area
+        h1 = secant1 - ma_val
+        h2 = secant2 - ma_val
+        trap_area = (h1 + h2) / 2
+        total_area += trap_area
+    
+    // Normalized area 
+    normalized_area = (total_area / price) * lookback
+    
+    // Adaptive scaling
+    scaling = adjust_parameter()
+    scaled_normalized_area = normalized_area / scaling
+    
+    // Calculate convexity indicator
+    convexity_indicator = 100 * tanh(scaled_normalized_area)
+    
+    convexity_indicator
+
+// Calculate indicators
+slope_line = slope_func()
+convexity_line = convexity_func()
+strength_line = (slope_line + convexity_line) / 2
+
+// Plot indicators
+plot(slope_line, color=color.red, title="Slope Indicator", linewidth=2)
+plot(ta.sma(convexity_line, 5), color=color.green, title="Convexity MA5", linewidth=2)
+
+// Reference lines
+hline(0, color=color.white, linestyle=hline.style_solid) 
+hline(0, color=color.gray, linestyle=hline.style_dashed)
+hline(50, color=color.gray, linestyle=hline.style_dotted)
+hline(-50, color=color.gray, linestyle=hline.style_dotted)
+
+
