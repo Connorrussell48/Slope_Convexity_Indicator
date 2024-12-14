@@ -1,3 +1,3 @@
-# Slope_Convexity_Magnitude_Indicator
+# Slope_Convexity_Indicator
 
 Utilizing Moving Averages as a Proxy to Determine Slope and Convexity in the Underlying
