@@ -45,6 +45,8 @@ Max Peak Gain 	24.76%
 Average drawdown after signal 	1.7%
 Median drawdown after signal	1.1%
 STD of drawdown after signal	1.59%
+![Screenshot 2024-12-18 at 1 02 10 PM](https://github.com/user-attachments/assets/36951243-833e-4f65-8fff-004613dbc319)
+
  
  
  
