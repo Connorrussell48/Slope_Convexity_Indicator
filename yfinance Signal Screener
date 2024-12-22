@@ -1,0 +1,118 @@
+import pandas as pd
+import numpy as np
+from scipy import integrate
+import yfinance as yf
+from datetime import datetime
+
+def indicators(df, ma_period=200, lookback=30):
+    df['MA200'] = df['Close'].rolling(window=ma_period).mean()
+    price = df['Close'].values
+    ma200 = df['MA200'].values
+    slopes = np.zeros(len(df))
+    convexity = np.zeros(len(df))
+    
+    for i in range(ma_period + lookback, len(df)):
+        ma_window = ma200[i-lookback:i+1]
+        t_window = np.arange(lookback + 1)
+        
+        start_ma, end_ma = ma_window[0], ma_window[-1]
+        slope = (end_ma - start_ma) / lookback
+        secant = start_ma + slope * t_window
+        
+        area = integrate.trapz(secant - ma_window, t_window)
+        normalized_area = (area / price[i]) * lookback
+        
+        slopes[i] = 100 * np.tanh((slope / ma200[i]) * 100 * lookback)
+        convexity[i] = 100 * np.tanh(normalized_area)
+    
+    results_df = pd.DataFrame({
+        'datetime': df.index[ma_period+lookback:],
+        'convexity': convexity[ma_period+lookback:],
+        'slope': slopes[ma_period+lookback:],
+        'price': price[ma_period+lookback:],
+        'ma': ma200[ma_period+lookback:]
+    })
+    
+    return results_df.set_index('datetime')
+
+def screen_tickers(tickers, intervals=['15m', '30m', '1h']):
+    results = []
+    today = datetime.now().date()
+    
+    for ticker in tickers:
+        for interval in intervals:
+            try:
+                data = yf.download(ticker, period='60d', interval=interval)
+                
+                if data.empty:
+                    print(f"No data retrieved for {ticker} on {interval}")
+                    continue
+                indicator_values = indicators(data)   
+                if indicator_values.empty:
+                    print(f"No indicators calculated for {ticker} on {interval}")
+                    continue
+                
+                bullish_conditions = (
+                    (indicator_values['slope'].shift(1) < 0) & 
+                    (indicator_values['slope'] > 0) & 
+                    (indicator_values['convexity'] > 0) &
+                    (indicator_values['price'] > indicator_values['ma'])
+                )
+                
+                bearish_conditions = (
+                    (indicator_values['slope'].shift(1) > 0) & 
+                    (indicator_values['slope'] < 0) & 
+                    (indicator_values['convexity'] < 0) &
+                    (indicator_values['price'] < indicator_values['ma'])
+                )
+                
+                bullish_transitions = indicator_values[bullish_conditions]
+                bearish_transitions = indicator_values[bearish_conditions]
+                
+                for idx, row in bullish_transitions.iterrows():
+                    results.append({
+                        'Ticker': ticker,
+                        'Timeframe': interval,
+                        'Datetime': idx.tz_localize(None),
+                        'Sentiment': 'Bullish',
+                        'Slope': row['slope'],
+                        'Convexity': row['convexity'],
+                        'Price': row['price'],
+                        'MA': row['ma']
+                    })
+                
+                for idx, row in bearish_transitions.iterrows():
+                    results.append({
+                        'Ticker': ticker,
+                        'Timeframe': interval,
+                        'Datetime': idx.tz_localize(None),
+                        'Sentiment': 'Bearish',
+                        'Slope': row['slope'],
+                        'Convexity': row['convexity'],
+                        'Price': row['price'],
+                        'MA': row['ma']
+                    })
+                
+            except Exception as e:
+                print(f"Error processing {ticker} on {interval}: {e}")
+    
+    results_df = pd.DataFrame(results)
+    
+    if results_df.empty:
+        print("No signals found.")
+        return results_df
+    
+    results_df['Datetime'] = pd.to_datetime(results_df['Datetime'])
+    
+    filtered_results = results_df[
+        results_df['Datetime'].dt.date == today
+    ]
+    
+    if not filtered_results.empty:
+        filtered_results.to_csv('trend_screener_results.csv', index=False)
+        print("Results exported to trend_screener_results.csv")
+    else:
+        print("No transitions for today.")
+    
+    return filtered_results
+
