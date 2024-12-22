@@ -116,3 +116,10 @@ def screen_tickers(tickers, intervals=['15m', '30m', '1h']):
     
     return filtered_results
 
+# Execution
+tickers = ["AAPL", "NVDA", "GOOG", "META"]
+
+results = screen_tickers(tickers)
+print(results)
+
+
