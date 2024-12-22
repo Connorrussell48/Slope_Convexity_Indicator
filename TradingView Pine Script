@@ -1,24 +1,23 @@
 //@version=5
-indicator("Adaptive Trend Indicators", overlay=false)
+indicator("Slope Convexity Indicator", overlay=false)
 
-// Adjust slope based on timeframe
+
 adjust_parameter() =>
-    // Trading hours per day: 6.5 hours
     daily_hours = 6.5
     
     current_tf_hours = switch(timeframe.period)
-        "1" => 1.0/60     // 1-minute
-        "3" => 3.0/60     // 3-minute
-        "5" => 5.0/60     // 5-minute
-        "15" => 15.0/60   // 15-minute
-        "30" => 30.0/60   // 30-minute
-        "45" => 45.0/60   // 45-minute
-        "60" => 1.0       // 1-hour
-        "240" => 4.0      // 4-hour
-        "D" => daily_hours  // Daily
-        "W" => daily_hours * 5  // Weekly 
-        "M" => daily_hours * 22 // Monthly 
-        => 1.0            // Default case
+        "1" => 1.0/60    
+        "3" => 3.0/60     
+        "5" => 5.0/60     
+        "15" => 15.0/60   
+        "30" => 30.0/60   
+        "45" => 45.0/60   
+        "60" => 1.0       
+        "240" => 4.0      
+        "D" => daily_hours  
+        "W" => daily_hours * 5  
+        "M" => daily_hours * 22 
+        => 1.0           
 
     // Scaling factor with min of 1
     scaling_factor = math. max(current_tf_hours/daily_hours * 5,1)
