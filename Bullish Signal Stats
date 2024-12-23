@@ -1,0 +1,295 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import integrate
+plt.ioff()
+
+
+def prepare_data(filepath):
+    df = pd.read_csv(
+        filepath,
+        parse_dates=[['Date', 'Time']],
+        dayfirst=True
+    )
+    df.set_index('Date_Time', inplace=True)
+    df.index.name = 'datetime'
+    df['MA200'] = df['Close'].rolling(window=200).mean()
+    df['MA400'] = df['Close'].rolling(window=400).mean()
+    return df
+
+def indicators(df, ma_period=200, lookback=30):
+
+    results = []
+    
+    for i in range(ma_period + lookback, len(df)):
+        window = slice(i - lookback, i + 1)
+        t_window = np.arange(lookback + 1)
+        
+        ma200_window = df['MA200'].iloc[window]
+        price = df['Close'].iloc[i]  
+        if price == 0:
+            normalized_area = 0
+            standard_slope = 0
+        else:
+            start_ma, end_ma = ma200_window.iloc[0], ma200_window.iloc[-1]
+            slope = (end_ma - start_ma) / lookback
+            secant = start_ma + slope * t_window
+            total_area = integrate.trapz(secant - ma200_window, t_window)
+            normalized_area = (total_area / price) * lookback
+            standard_slope = (slope / price) * 100 * lookback
+        convexity_indicator = 100 * np.tanh(normalized_area)
+        slope_indicator = 100 * np.tanh(standard_slope)
+        
+        if i >= 400:
+            ma400_window = df['MA400'].iloc[i - lookback:i + 1]
+            start_ma400, end_ma400 = ma400_window.iloc[0], ma400_window.iloc[-1]
+            slope_400 = (end_ma400 - start_ma400) / lookback
+        else:
+            slope_400 = 0        
+        results.append({
+            'datetime': df.index[i],
+            'convexity': convexity_indicator,
+            'slope': slope_indicator,     
+            'slope_400': slope_400,       
+            'convexity_ma5': np.nan,      
+            'price': price,
+            'ma': df['MA200'].iloc[i]  # Corrected 'M200' to 'MA200'
+        })
+    results_df = pd.DataFrame(results)
+    results_df.set_index('datetime', inplace=True)
+    results_df['convexity_ma5'] = results_df['convexity'].rolling(window=5).mean()
+    
+    return results_df
+
+def analyze_signals(combined):
+
+    signals = []
+    for i in range(1, len(combined)):
+        row = combined.iloc[i]
+        prev_row = combined.iloc[i-1]
+        
+        if (row['slope'] > 0 and
+            prev_row['slope'] <= 0 and
+            row['convexity_ma5'] > 0 and
+            row['price'] > row['ma'] and
+            row['slope_400'] > 0):
+            signals.append((combined.index[i], i))
+    return signals
+
+def stats(combined, signals):
+
+    number_of_signals = len(signals)  
+    slope_positive_lengths = []
+    peak_gains = []
+    convexities_at_signal = []
+    periods_to_peak_price = []
+    drawdowns = [] 
+    slope_arr = combined['slope'].values
+    close_arr = combined['price'].values
+    conv_arr = combined['convexity'].values
+    if not isinstance(combined.index, pd.DatetimeIndex):
+        combined.index = pd.to_datetime(combined.index, errors='coerce')
+
+    for (signal_time, signal_idx) in signals:
+        signal_convexity = conv_arr[signal_idx]
+        convexities_at_signal.append(signal_convexity)
+        
+        entry_price = close_arr[signal_idx]
+        
+        j = signal_idx
+        peak_price = entry_price
+        peak_price_index = j
+        lowest_price = entry_price
+        while j < len(combined) and slope_arr[j] > 0:
+            current_price = close_arr[j]
+            if current_price > peak_price:
+                peak_price = current_price
+                peak_price_index = j
+            if current_price < lowest_price:
+                lowest_price = current_price
+            j += 1
+        
+        slope_length = j - signal_idx
+        slope_positive_lengths.append(slope_length)
+        peak_gain = ((peak_price - entry_price) / entry_price) * 100 if entry_price != 0 else 0
+        peak_gains.append(peak_gain)
+        periods_after_signal_for_peak = peak_price_index - signal_idx
+        periods_to_peak_price.append(periods_after_signal_for_peak)
+        worst_drawdown = ((lowest_price - entry_price)/entry_price)*100 if entry_price != 0 else 0
+        drawdowns.append(worst_drawdown)
+
+    def safe_mean(arr):
+        return np.mean(arr) if arr else 0
+    def safe_std(arr):
+        return np.std(arr) if arr else 0
+    def safe_median(arr):
+        return np.median(arr) if arr else 0
+    def safe_percentile(arr, q):
+        return np.percentile(arr, q) if arr else 0
+            
+    avg_slope_pos_length = safe_mean(slope_positive_lengths)
+    std_slope_pos_length = safe_std(slope_positive_lengths)
+    median_slope_length = safe_median(slope_positive_lengths)
+    q1_slope_length = safe_percentile(slope_positive_lengths, 25)
+    q3_slope_length = safe_percentile(slope_positive_lengths, 75)
+    avg_peak_gain = safe_mean(peak_gains)
+    std_peak_gain = safe_std(peak_gains)
+    median_peak_gain = safe_median(peak_gains)
+    q1_peak_gain = safe_percentile(peak_gains, 25)
+    q3_peak_gain = safe_percentile(peak_gains, 75)
+    avg_conv_signal = safe_mean(convexities_at_signal)
+    avg_periods_peak = safe_mean(periods_to_peak_price)
+    std_periods_peak = safe_std(periods_to_peak_price)
+    median_periods_peak = safe_median(periods_to_peak_price)
+    q1_periods_peak = safe_percentile(periods_to_peak_price, 25)
+    q3_periods_peak = safe_percentile(periods_to_peak_price, 75)
+    successes = sum(1 for g in peak_gains if g > 1)
+    success_rate = (successes / number_of_signals * 100) if number_of_signals > 0 else 0
+    max_peak_gain = max(peak_gains) if peak_gains else 0
+    min_peak_gain = min(peak_gains) if peak_gains else 0
+    avg_drawdown = safe_mean(drawdowns)
+    std_drawdown = safe_std(drawdowns)
+    median_drawdown = safe_median(drawdowns)
+    q1_drawdown = safe_percentile(drawdowns, 25)
+    q3_drawdown = safe_percentile(drawdowns, 75)
+    max_drawdown = max(drawdowns) if drawdowns else 0
+    min_drawdown = min(drawdowns) if drawdowns else 0
+
+    print("\nStatistics:")
+    print(f"Number of signals: {number_of_signals}")
+    print(f"1. Average # of periods slope was positive after signal: {avg_slope_pos_length:.2f}")
+    print(f"   STD of # of periods slope was positive: {std_slope_pos_length:.2f}")
+    print(f"   Median: {median_slope_length:.2f}")
+    print(f"   Q1: {q1_slope_length:.2f}, Q3: {q3_slope_length:.2f}")
+    print(f"2. Average # of periods until peak price: {avg_periods_peak:.2f}")
+    print(f"   STD of # of periods until peak price: {std_periods_peak:.2f}")
+    print(f"   Median: {median_periods_peak:.2f}")
+    print(f"   Q1: {q1_periods_peak:.2f}, Q3: {q3_periods_peak:.2f}")
+    print(f"3. Average peak gain (%): {avg_peak_gain:.2f}%")
+    print(f"   STD of peak gain (%): {std_peak_gain:.2f}%")
+    print(f"   Median: {median_peak_gain:.2f}%")
+    print(f"   Q1: {q1_peak_gain:.2f}%, Q3: {q3_peak_gain:.2f}%")
+    print(f"4. Success rate (peak_gain > 1%): {success_rate:.2f}%")
+    print(f"5. Max peak gain (%): {max_peak_gain:.2f}%, Min peak gain (%): {min_peak_gain:.2f}%")
+    print(f"6. Average drawdown (%): {avg_drawdown:.2f}%")
+    print(f"   STD of drawdown (%): {std_drawdown:.2f}%")
+    print(f"   Median: {median_drawdown:.2f}%, Q1: {q1_drawdown:.2f}%, Q3: {q3_drawdown:.2f}%")
+    if peak_gains:
+        sorted_gains = sorted(peak_gains)
+        cdf = np.arange(1, len(sorted_gains)+1)/len(sorted_gains)
+        plt.figure(figsize=(6,4))
+        plt.plot(sorted_gains, cdf, marker='.', linestyle='none')
+        plt.title("Peak Gains Cumulative Distribution")
+        plt.xlabel("Peak Gain (%)")
+        plt.ylabel("Cumulative Probability")
+        plt.tight_layout()
+        plt.show()
+        
+    if periods_to_peak_price:
+        plt.figure(figsize=(6,4))
+        plt.hist(periods_to_peak_price, bins=20, color='skyblue', edgecolor='black')
+        plt.title("Periods to Peak Price")
+        plt.xlabel("# Periods to Peak")
+        plt.ylabel("Frequency")
+        plt.tight_layout()
+        plt.show()
+    
+    if slope_positive_lengths:
+        plt.figure(figsize=(6,4))
+        plt.hist(slope_positive_lengths, bins=20, color='lightgreen', edgecolor='black')
+        plt.title("Positive Slope Lengths")
+        plt.xlabel("Positive Slope Length Periods")
+        plt.ylabel("Frequency")
+        plt.tight_layout()
+        plt.show()
+
+    return {
+        'number_of_signals': number_of_signals,
+        'avg_slope_pos_length': avg_slope_pos_length,
+        'std_slope_pos_length': std_slope_pos_length,
+        'median_slope_length': median_slope_length,
+        'q1_slope_length': q1_slope_length,
+        'q3_slope_length': q3_slope_length,
+        'avg_peak_gain': avg_peak_gain,
+        'std_peak_gain': std_peak_gain,
+        'median_peak_gain': median_peak_gain,
+        'q1_peak_gain': q1_peak_gain,
+        'q3_peak_gain': q3_peak_gain,
+        'success_rate_1pct': success_rate,
+        'max_peak_gain': max_peak_gain,
+        'min_peak_gain': min_peak_gain,
+        'avg_drawdown': avg_drawdown,
+        'std_drawdown': std_drawdown,
+        'median_drawdown': median_drawdown,
+        'q1_drawdown': q1_drawdown,
+        'q3_drawdown': q3_drawdown,
+        'periods_to_peak_price': periods_to_peak_price,
+        'slope_positive_lengths': slope_positive_lengths,
+        'peak_gains': peak_gains,
+        'drawdowns': drawdowns
+    }
+
+def plot_signals(combined, signals):
+    extra_bars = 100
+    for (signal_time, signal_idx) in signals:
+        idx = signal_idx
+        start_loc = max(idx - extra_bars, 0)
+        end_loc = min(idx + extra_bars + 300, len(combined)-1)
+        subset = combined.iloc[start_loc:end_loc+1]
+        subset_length = len(subset)
+        x = range(subset_length)
+        
+
+        relative_idx = signal_idx - start_loc        
+        fig, (ax_top, ax_bottom) = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
+    
+        ax_top.plot(x, subset['price'], label='Price', color='blue')
+        ax_top.plot(x, subset['ma'], label='MA200', color='orange', linewidth=2)
+        entry_price = combined.loc[signal_time, 'price']
+        ax_top.scatter(relative_idx, entry_price, marker='^', color='green', s=100, label='Bullish Entry Signal')
+        
+        formatted_time = signal_time.strftime('%d/%m/%Y %I:%M:%S %p')
+        ax_top.set_title(f"Bullish Entry Signal on {formatted_time}\nPrice: {entry_price:.2f}")
+        ax_top.legend()
+        ax_top.grid(True)
+        ax_bottom.plot(x, subset['convexity'], label='Convexity', color='purple')
+        ax_bottom.plot(x, subset['slope'], label='Slope', color='red')
+        
+        ax_bottom.axhline(y=0, color='black', linewidth=1)
+        
+        ax_bottom.legend()
+        ax_bottom.grid(True)
+
+        ax_bottom.set_xlabel("Periods")
+        
+        plt.tight_layout()
+        plt.show()
+
+def main():
+
+    try:
+        print("Preping data")
+        df = prepare_data('S&P-15-Min.csv')
+        
+        print("Calculating indicators")
+        indi = indicators(df, ma_period=200, lookback=30)
+        combined = df.join(indi, how='inner')
+        
+        print("Signals")
+        signals = analyze_signals(combined)
+        
+        print("Calculating stats")
+        stat = stats(combined, signals)
+
+    # prints charts of every signal
+        # print("Plotting entry signals...")
+        # plot_signals(combined, signals)
+        
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+        import traceback
+        print("\nFull traceback:")
+        print(traceback.format_exc())
+
+if __name__ == "__main__":
+    main()
