@@ -53,7 +53,7 @@ def indicators(df, ma_period=200, lookback=30):
             'slope_400': slope_400,       
             'convexity_ma5': np.nan,      
             'price': price,
-            'ma': df['MA200'].iloc[i]  # Corrected 'M200' to 'MA200'
+            'ma': df['MA200'].iloc[i]
         })
     results_df = pd.DataFrame(results)
     results_df.set_index('datetime', inplace=True)
@@ -268,7 +268,7 @@ def plot_signals(combined, signals):
 def main():
 
     try:
-        print("Preping data")
+        print("Prepping data")
         df = prepare_data('S&P-15-Min.csv')
         
         print("Calculating indicators")
@@ -282,7 +282,7 @@ def main():
         stat = stats(combined, signals)
 
     # prints charts of every signal
-        # print("Plotting entry signals...")
+        # print("Plot signals")
         # plot_signals(combined, signals)
         
     except Exception as e:
