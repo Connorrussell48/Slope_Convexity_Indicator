@@ -1,0 +1,271 @@
+import pandas as pd
+import numpy as np
+from scipy import integrate, stats
+from math import sqrt, log, exp
+import matplotlib.pyplot as plt
+
+def bs_call(S, K, T, r, sigma):
+    if T <= 0:
+        return max(S - K, 0.0)
+    d1 = (log(S/K) + (r + 0.5 * sigma**2) * T) / (sigma * sqrt(T))
+    d2 = d1 - sigma * sqrt(T)
+    return S * stats.norm.cdf(d1) - K * exp(-r * T) * stats.norm.cdf(d2)
+
+def bs_put(S, K, T, r, sigma):
+    if T <= 0:
+        return max(K - S, 0.0)
+    d1 = (log(S/K) + (r + 0.5 * sigma**2) * T) / (sigma * sqrt(T))
+    d2 = d1 - sigma * sqrt(T)
+    return K * exp(-r * T) * stats.norm.cdf(-d2) - S * stats.norm.cdf(-d1)
+
+class Position:
+    def __init__(self, type, signal_time, signal_idx, S, K, T, r, sigma, contracts, days_to_expiry, holding_period=211):
+        self.type = type
+        self.signal_time = signal_time
+        self.signal_idx = signal_idx
+        self.S_entry = S
+        self.K = K
+        self.T_entry = T
+        self.r = r
+        self.sigma_entry = sigma
+        self.contracts = contracts
+        self.days_to_expiry = days_to_expiry
+        self.holding_period = holding_period
+        self.option_entry_price = bs_call(S, K, T, r, sigma) if type == 'call' else bs_put(S, K, T, r, sigma)
+        self.open = True
+
+    def close(self, exit_time, exit_idx, S_exit, r, sigma_exit, days_to_expiry):
+        self.exit_time = exit_time
+        self.exit_idx = exit_idx
+        self.S_exit = S_exit
+        self.holding_period_used = exit_idx - self.signal_idx
+
+        exit_days = (self.holding_period_used * 15) / 390.0
+        remaining_days = max(days_to_expiry - exit_days, 0)
+        T_exit = remaining_days / 365.0
+
+        self.option_exit_price = bs_call(S_exit, self.K, T_exit, r, sigma_exit) if self.type == 'call' else bs_put(S_exit, self.K, T_exit, r, sigma_exit)
+        
+        self.pl = (self.option_exit_price - self.option_entry_price) * self.contracts
+        self.option_return_pct = (self.pl / (self.option_entry_price * self.contracts)) * 100 if self.option_entry_price != 0 else 0
+        self.stock_return_pct = ((S_exit - self.S_entry) / self.S_entry * 100) if self.S_entry != 0 else 0
+        self.iv_exit = sigma_exit * 100
+        self.open = False
+        
+        return self.pl, self.option_return_pct, self.stock_return_pct
+
+def prep_data(filepath):
+    df = pd.read_csv(filepath, parse_dates=[['Date', 'Time']], dayfirst=True)
+    df.set_index('Date_Time', inplace=True)
+    df.index.name = 'datetime'
+    df['MA200'] = df['Close'].rolling(window=200).mean()
+    df['MA400'] = df['Close'].rolling(window=400).mean()
+    return df
+
+def load_vix(filepath):
+    vix = pd.read_csv(filepath, parse_dates=['DATE'], dayfirst=False)
+    vix.set_index('DATE', inplace=True)
+    vix['Close_VIX'] = vix['CLOSE']
+    return vix
+
+def calc_indicators(df, ma_period=200, lookback=30):
+    ma200 = df['MA200'].values
+    ma400 = df['MA400'].values
+    idx_range = range(ma_period + lookback, len(df))
+    results = []
+    
+    for i in idx_range:
+        window = slice(i - lookback, i + 1)
+        ma200_window = ma200[window]
+        price = ma200[i]
+        if price == 0:
+            norm_area = slope = 0
+        else:
+            start_ma = ma200_window[0]
+            end_ma = ma200_window[-1]
+            slope = (end_ma - start_ma) / lookback
+            
+            t = np.arange(lookback + 1)
+            secant = start_ma + slope * t
+            area = integrate.trapz(secant - ma200_window, t)
+            norm_area = (area / price) * lookback
+            slope = (slope / price) * 100 * lookback
+        
+        slope_400 = ((ma400[i] - ma400[i - lookback]) / lookback)
+        
+        results.append((
+            df.index[i],
+            100 * np.tanh(norm_area),
+            100 * np.tanh(slope),
+            slope_400,
+            price,
+            ma200[i]
+        ))
+    
+    results_df = pd.DataFrame(results, columns=['datetime','convexity','slope','slope_400','price','ma'])
+    results_df.set_index('datetime', inplace=True)
+    results_df['convexity_ma5'] = results_df['convexity'].rolling(window=5).mean()
+    return results_df
+
+def find_signals(df):
+    signals = []
+    slope = df['slope'].values
+    slope_prev = np.roll(slope, 1)
+    conv_ma5 = df['convexity_ma5'].values
+    close = df['Close'].values
+    ma200 = df['MA200'].values
+    slope_400 = df['slope_400'].values
+    
+    for i in range(1, len(df)):
+        if slope[i] > 0 and slope_prev[i] <= 0 and conv_ma5[i] > 0 and close[i] > ma200[i] and slope_400[i] > 0:
+            signals.append((df.index[i], i, 'call'))
+        elif slope[i] < 0 and slope_prev[i] >= 0 and conv_ma5[i] < 0 and close[i] < ma200[i] and slope_400[i] < 0:
+            signals.append((df.index[i], i, 'put'))
+    return signals
+
+def calc_stats(trades, equity_curve, initial_capital):
+    stats = {}
+    calls = [t for t in trades if t.type == 'call']
+    puts = [t for t in trades if t.type == 'put']
+    
+    stats['total_trades'] = len(trades)
+    stats['call_trades'] = len(calls)
+    stats['put_trades'] = len(puts)
+    stats['win_rate_calls'] = len([t for t in calls if t.pl > 0]) / len(calls) * 100 if calls else 0
+    stats['win_rate_puts'] = len([t for t in puts if t.pl > 0]) / len(puts) * 100 if puts else 0
+    stats['win_rate_total'] = len([t for t in trades if t.pl > 0]) / len(trades) * 100 if trades else 0
+    
+    stats['total_return'] = ((equity_curve[-1][1] - initial_capital) / initial_capital) * 100
+    stats['call_return'] = sum(t.pl for t in calls)
+    stats['put_return'] = sum(t.pl for t in puts)
+    
+    stats['avg_trade_return'] = np.mean([t.option_return_pct for t in trades]) if trades else 0
+    stats['avg_trade_duration'] = np.mean([t.holding_period_used for t in trades]) if trades else 0
+    
+    equity_series = pd.Series([eq[1] for eq in equity_curve])
+    returns = equity_series.pct_change().dropna()
+    stats['max_drawdown'] = ((equity_series - equity_series.cummax()) / equity_series.cummax()).min() * 100
+    stats['sortino'] = returns.mean() / returns[returns < 0].std() if len(returns[returns < 0]) > 0 else 0
+    
+    return stats
+
+def print_stats(stats, start_date, end_date):
+    print("\nPortfolio Stats")
+    print("=" * 50)
+    print(f"Period: {start_date.date()} to {end_date.date()}")
+    print(f"Total Return: {stats['total_return']:.2f}%")
+    print(f"Max Drawdown: {stats['max_drawdown']:.2f}%")
+    print(f"Sortino Ratio: {stats['sortino']:.2f}")
+    print("\nTrade Stats")
+    print(f"Total Trades: {stats['total_trades']}")
+    print(f"Win Rate (Total): {stats['win_rate_total']:.2f}%")
+    print(f"Win Rate (Calls): {stats['win_rate_calls']:.2f}%")
+    print(f"Win Rate (Puts): {stats['win_rate_puts']:.2f}%")
+    print(f"Average Trade Return: {stats['avg_trade_return']:.2f}%")
+    print(f"Average Trade Duration: {stats['avg_trade_duration']:.1f} bars")
+    print("\nStrategy Returns")
+    print(f"Call Options P&L: ${stats['call_return']:.2f}")
+    print(f"Put Options P&L: ${stats['put_return']:.2f}")
+
+def plot_equity(equity_curve):
+    if equity_curve:
+        df = pd.DataFrame(equity_curve, columns=['datetime', 'equity']).set_index('datetime')
+        plt.figure(figsize=(12, 6))
+        plt.plot(df.index, df['equity'])
+        plt.title("Portfolio Equity Curve")
+        plt.xlabel("Date")
+        plt.ylabel("Equity ($)")
+        plt.grid(True)
+        plt.show()
+
+def plot_trade_hist(trades):
+    if not trades:
+        print("No trades to plot.")
+        return
+    
+    calls = [t.option_return_pct for t in trades if t.type == 'call']
+    puts = [t.option_return_pct for t in trades if t.type == 'put']
+    
+    plt.figure(figsize=(12, 6))
+    plt.hist(calls, bins=30, alpha=0.7, color='blue', edgecolor='black')
+    plt.title("Call Option Returns")
+    plt.xlabel("Option Return (%)")
+    plt.ylabel("Frequency")
+    plt.grid(True)
+    plt.show()
+
+    plt.figure(figsize=(12, 6))
+    plt.hist(puts, bins=30, alpha=0.7, color='red', edgecolor='black')
+    plt.title("Put Option Returns")
+    plt.xlabel("Option Return (%)")
+    plt.ylabel("Frequency")
+    plt.grid(True)
+    plt.show()
+
+def backtest(df, signals, vix, days_to_expiry=30, contracts=80, holding_period=211):
+    initial_capital = 10000
+    capital = initial_capital
+    equity_curve = []
+    trades = []
+    r = 0.03
+    position = None
+    vix_dict = dict(zip(vix.index.date, vix['Close_VIX']))
+    close_arr = df['Close'].values
+    index_arr = df.index
+    signal_dict = {s[1]: s for s in sorted(signals, key=lambda x: x[0])}
+
+    for i in range(len(df)):
+        time = index_arr[i]
+        close = close_arr[i]
+        date = time.date()
+        iv = vix_dict.get(date, 20.0) / 100.0
+
+        if i in signal_dict:
+            signal = signal_dict[i]
+            if position and position.type != signal[2]:
+                pl, ret_opt, ret_stock = position.close(time, i, close, r, iv, days_to_expiry)
+                capital += pl
+                equity_curve.append((time, capital))
+                trades.append(position)
+                position = None
+
+            if not position:
+                position = Position(
+                    signal[2], time, i, close, close,
+                    days_to_expiry/365.0, r, iv,
+                    contracts, days_to_expiry, holding_period
+                )
+        if position:
+            hp_used = i - position.signal_idx
+            if hp_used >= holding_period or (position.days_to_expiry - (hp_used * 15) / 390.0) <= 0:
+                pl, ret_opt, ret_stock = position.close(time, i, close, r, iv, days_to_expiry)
+                capital += pl
+                equity_curve.append((time, capital))
+                trades.append(position)
+                position = None
+
+    if position:
+        pl, ret_opt, ret_stock = position.close(index_arr[-1], len(df)-1, close_arr[-1], r, iv, days_to_expiry)
+        capital += pl
+        equity_curve.append((index_arr[-1], capital))
+        trades.append(position)
+
+    plot_equity(equity_curve)
+    plot_trade_hist(trades) 
+    stats = calc_stats(trades, equity_curve, initial_capital)
+    print_stats(stats, df.index[0], df.index[-1])
+    
+    return trades, equity_curve, capital
+
+
+def main():
+    df = prep_data('S&P-15-Min.csv')
+    vix = load_vix('VIX_PH.csv')
+    indicators = calc_indicators(df)
+    combined = df.join(indicators, how='inner')
+    signals = find_signals(combined)
+    trades, equity_curve, final_capital = backtest(combined, signals, vix)
+
+if __name__ == "__main__":
+    main()
+
